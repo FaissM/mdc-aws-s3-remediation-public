@@ -22,6 +22,12 @@
                 "description": "Name for the storage account (must be globally unique)"
             }
         },
+        "keyVaultName": {
+            "type": "string",
+            "metadata": {
+                "description": "Name of the Azure Key Vault (must be globally unique)"
+            }
+        },
         "userAssignedIdentityName": {
             "type": "string",
             "defaultValue": "mdc-s3-remediation-identity",
@@ -29,16 +35,10 @@
                 "description": "Name of user-assigned managed identity"
             }
         },
-        "awsAccessKeyId": {
-            "type": "securestring",
+        "awsSecretsManagerSecretArn": {
+            "type": "string",
             "metadata": {
-                "description": "AWS Access Key ID for IAM user with S3 permissions"
-            }
-        },
-        "awsSecretAccessKey": {
-            "type": "securestring",
-            "metadata": {
-                "description": "AWS Secret Access Key for IAM user"
+                "description": "ARN of the AWS Secrets Manager secret containing AWS credentials"
             }
         },
         "awsRegion": {
@@ -64,13 +64,14 @@
         "mdcApiKey": {
             "type": "securestring",
             "metadata": {
-                "description": "API Key for function authentication"
+                "description": "API Key for function authentication (will be stored in Key Vault)"
             }
         }
     },
     "variables": {
         "hostingPlanName": "[concat(parameters('functionAppName'), '-plan')]",
-        "userAssignedIdentityId": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('userAssignedIdentityName'))]"
+        "userAssignedIdentityId": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('userAssignedIdentityName'))]",
+        "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6"
     },
     "resources": [
         {
@@ -92,6 +93,61 @@
                 "supportsHttpsTrafficOnly": true,
                 "minimumTlsVersion": "TLS1_2",
                 "allowBlobPublicAccess": false
+            }
+        },
+        {
+            "type": "Microsoft.KeyVault/vaults",
+            "apiVersion": "2023-07-01",
+            "name": "[parameters('keyVaultName')]",
+            "location": "[parameters('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('userAssignedIdentityName'))]"
+            ],
+            "properties": {
+                "sku": {
+                    "family": "A",
+                    "name": "standard"
+                },
+                "tenantId": "[subscription().tenantId]",
+                "enableRbacAuthorization": true,
+                "enableSoftDelete": true,
+                "softDeleteRetentionInDays": 90,
+                "enablePurgeProtection": true,
+                "publicNetworkAccess": "Enabled"
+            },
+            "tags": {
+                "purpose": "MDC-AWS-Remediation",
+                "component": "secrets-management"
+            }
+        },
+        {
+            "type": "Microsoft.KeyVault/vaults/secrets",
+            "apiVersion": "2023-07-01",
+            "name": "[concat(parameters('keyVaultName'), '/mdc-api-key')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+            ],
+            "properties": {
+                "value": "[parameters('mdcApiKey')]",
+                "contentType": "text/plain",
+                "attributes": {
+                    "enabled": true
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Authorization/roleAssignments",
+            "apiVersion": "2022-04-01",
+            "name": "[guid(resourceGroup().id, parameters('userAssignedIdentityName'), 'Key Vault Secrets User')]",
+            "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+            "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('userAssignedIdentityName'))]"
+            ],
+            "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsUserRoleId'))]",
+                "principalId": "[reference(variables('userAssignedIdentityId')).principalId]",
+                "principalType": "ServicePrincipal"
             }
         },
         {
@@ -117,7 +173,9 @@
             "dependsOn": [
                 "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
                 "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
-                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('userAssignedIdentityName'))]"
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('userAssignedIdentityName'))]",
+                "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'mdc-api-key')]",
+                "[resourceId('Microsoft.Authorization/roleAssignments', guid(resourceGroup().id, parameters('userAssignedIdentityName'), 'Key Vault Secrets User'))]"
             ],
             "identity": {
                 "type": "UserAssigned",
@@ -127,6 +185,7 @@
             },
             "properties": {
                 "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
+                "keyVaultReferenceIdentity": "[variables('userAssignedIdentityId')]",
                 "siteConfig": {
                     "linuxFxVersion": "python|3.11",
                     "appSettings": [
@@ -151,12 +210,8 @@
                             "value": "python"
                         },
                         {
-                            "name": "AWS_ACCESS_KEY_ID",
-                            "value": "[parameters('awsAccessKeyId')]"
-                        },
-                        {
-                            "name": "AWS_SECRET_ACCESS_KEY",
-                            "value": "[parameters('awsSecretAccessKey')]"
+                            "name": "AWS_SECRETS_MANAGER_SECRET_ARN",
+                            "value": "[parameters('awsSecretsManagerSecretArn')]"
                         },
                         {
                             "name": "AWS_REGION",
@@ -164,7 +219,7 @@
                         },
                         {
                             "name": "MDC_API_KEY",
-                            "value": "[parameters('mdcApiKey')]"
+                            "value": "[concat('@Microsoft.KeyVault(VaultName=', parameters('keyVaultName'), ';SecretName=mdc-api-key)')]"
                         },
                         {
                             "name": "ALLOWED_ACCOUNT_IDS",
@@ -203,6 +258,14 @@
         "functionAppName": {
             "type": "string",
             "value": "[parameters('functionAppName')]"
+        },
+        "keyVaultName": {
+            "type": "string",
+            "value": "[parameters('keyVaultName')]"
+        },
+        "keyVaultUri": {
+            "type": "string",
+            "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))).vaultUri]"
         }
     }
 }

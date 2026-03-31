@@ -5,6 +5,8 @@ import os
 import re
 import boto3
 from botocore.exceptions import ClientError
+from functools import lru_cache
+from datetime import datetime, timedelta
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -13,8 +15,69 @@ ALLOWED_ACCOUNT_IDS = os.environ.get('ALLOWED_ACCOUNT_IDS', '').split(',')
 # Allowed S3 bucket names (comma-separated in env var)
 ALLOWED_BUCKET_NAMES = os.environ.get('ALLOWED_BUCKET_NAMES', '').split(',')
 
+# Cache for AWS credentials (refreshed every 55 minutes)
+_aws_credentials_cache = {
+    'credentials': None,
+    'expiry': None
+}
+
+def get_aws_credentials():
+    """
+    Retrieve AWS credentials from AWS Secrets Manager.
+    Credentials are cached for 55 minutes to minimize API calls.
+    
+    Expected secret format in AWS Secrets Manager:
+    {
+        "aws_access_key_id": "AKIA...",
+        "aws_secret_access_key": "..."
+    }
+    """
+    global _aws_credentials_cache
+    
+    # Check if we have valid cached credentials
+    if (_aws_credentials_cache['credentials'] and 
+        _aws_credentials_cache['expiry'] and 
+        datetime.utcnow() < _aws_credentials_cache['expiry']):
+        logging.debug('Using cached AWS credentials')
+        return _aws_credentials_cache['credentials']
+    
+    secret_arn = os.environ.get('AWS_SECRETS_MANAGER_SECRET_ARN')
+    region = os.environ.get('AWS_REGION', 'us-east-1')
+    
+    if not secret_arn:
+        # Fallback to environment variables for local development
+        logging.warning('AWS_SECRETS_MANAGER_SECRET_ARN not set, falling back to environment variables')
+        return {
+            'aws_access_key_id': os.environ.get('AWS_ACCESS_KEY_ID'),
+            'aws_secret_access_key': os.environ.get('AWS_SECRET_ACCESS_KEY')
+        }
+    
+    logging.info(f'Retrieving AWS credentials from Secrets Manager: {secret_arn}')
+    
+    try:
+        # Create Secrets Manager client
+        # For cross-account access, uses IAM role with secretsmanager:GetSecretValue permission
+        secrets_client = boto3.client('secretsmanager', region_name=region)
+        
+        response = secrets_client.get_secret_value(SecretId=secret_arn)
+        secret_data = json.loads(response['SecretString'])
+        
+        # Cache the credentials for 55 minutes
+        _aws_credentials_cache['credentials'] = {
+            'aws_access_key_id': secret_data.get('aws_access_key_id'),
+            'aws_secret_access_key': secret_data.get('aws_secret_access_key')
+        }
+        _aws_credentials_cache['expiry'] = datetime.utcnow() + timedelta(minutes=55)
+        
+        logging.info('Successfully retrieved and cached AWS credentials from Secrets Manager')
+        return _aws_credentials_cache['credentials']
+        
+    except ClientError as e:
+        logging.error(f'Failed to retrieve AWS credentials from Secrets Manager: {e}')
+        raise
+
 def validate_api_key(req):
-    """Validate API key from request header"""
+    """Validate API key from request header (retrieved from Azure Key Vault)"""
     expected_key = os.environ.get('MDC_API_KEY')
     if not expected_key:
         return False, "API key not configured"
@@ -50,11 +113,14 @@ def validate_bucket_name(bucket_name):
 
 def enable_s3_block_public_access(account_id):
     """Enable S3 Block Public Access at account level"""
-    # Create S3 control client with credentials from environment
+    # Get credentials from AWS Secrets Manager
+    credentials = get_aws_credentials()
+    
+    # Create S3 control client with credentials from Secrets Manager
     s3control = boto3.client(
         's3control',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        aws_access_key_id=credentials.get('aws_access_key_id'),
+        aws_secret_access_key=credentials.get('aws_secret_access_key'),
         region_name=os.environ.get('AWS_REGION', 'us-east-1')
     )
     
@@ -83,11 +149,14 @@ def enable_s3_block_public_access(account_id):
 
 def enable_s3_bucket_block_public_access(bucket_name):
     """Enable S3 Block Public Access at bucket level"""
-    # Create S3 client with credentials from environment
+    # Get credentials from AWS Secrets Manager
+    credentials = get_aws_credentials()
+    
+    # Create S3 client with credentials from Secrets Manager
     s3 = boto3.client(
         's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        aws_access_key_id=credentials.get('aws_access_key_id'),
+        aws_secret_access_key=credentials.get('aws_secret_access_key'),
         region_name=os.environ.get('AWS_REGION', 'us-east-1')
     )
     
