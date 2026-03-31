@@ -6,7 +6,7 @@ param(
     [string]$ResourceGroupName = "mdc-aws-remediation-rg",
     
     [Parameter(Mandatory=$false)]
-    [string]$AzureFunctionUrl = "https://<your-function-app-name>.azurewebsites.net/api/remediate-s3-public-access",
+    [string]$AzureFunctionUrl = "https://mdc-s3-remediation.azurewebsites.net/api/remediate-s3-public-access",
     
     [Parameter(Mandatory=$true)]
     [string]$AzureFunctionApiKey,
@@ -15,7 +15,7 @@ param(
     [string]$FallbackEmail,
     
     [Parameter(Mandatory=$false)]
-    [string]$Location = "eastus",
+    [string]$Location = "swedencentral",
     
     [Parameter(Mandatory=$false)]
     [string]$LogicAppName = "mdc-remediate-s3-block-public-access",
@@ -80,8 +80,5 @@ Write-Host "  - Logic App: $LogicAppName"
 Write-Host "  - Workflow Automation: $AutomationName"
 Write-Host "`nAzure Function: $AzureFunctionUrl"
 Write-Host "Fallback Email: $FallbackEmail"
-Write-Host "`nNext Steps:"
-Write-Host "  1. Verify the Logic App is enabled"
-Write-Host "  2. Check the Workflow Automation in MDC"
-Write-Host "  3. Test by disabling S3 Block Public Access on your bucket"
-Write-Host "  4. Monitor runs in Logic App Run History"
+Write-Host "  4. Test by manually triggering the Logic App"
+Write-Host "  5. Monitor runs in Logic App Run History"

@@ -28,11 +28,18 @@
         "description": "Trigger URI of the Logic App (HTTP trigger URL)"
       }
     },
-    "targetBucketName": {
-      "type": "string",
-      "defaultValue": "my-example-bucket",
+    "targetAwsAccountIds": {
+      "type": "array",
+      "defaultValue": ["093590341661"],
       "metadata": {
-        "description": "S3 bucket name to target for bucket-level remediation"
+        "description": "AWS Account IDs to target for remediation"
+      }
+    },
+    "targetBucketNames": {
+      "type": "array",
+      "defaultValue": ["mywsbucketmdc"],
+      "metadata": {
+        "description": "S3 bucket names to target for remediation (bucket-level recommendations)"
       }
     }
   },
@@ -106,7 +113,7 @@
         "recommendation": "S3-Block-Public-Access-Bucket"
       },
       "properties": {
-        "description": "[concat('Automatically remediate S3 Block Public Access at bucket level for ', parameters('targetBucketName'))]",
+        "description": "Automatically remediate S3 Block Public Access at bucket level for mywsbucketmdc",
         "isEnabled": true,
         "scopes": [
           {
@@ -141,7 +148,7 @@
                   {
                     "propertyJPath": "properties.resourceDetails.Id",
                     "propertyType": "String",
-                    "expectedValue": "[parameters('targetBucketName')]",
+                    "expectedValue": "mywsbucketmdc",
                     "operator": "Contains"
                   }
                 ]

@@ -18,7 +18,7 @@
     },
     "azureFunctionUrl": {
       "type": "string",
-      "defaultValue": "https://<your-function-app>.azurewebsites.net/api/remediate-s3-public-access",
+      "defaultValue": "https://mdc-s3-remediation.azurewebsites.net/api/remediate-s3-public-access",
       "metadata": {
         "description": "Azure Function URL for S3 Block Public Access remediation"
       }

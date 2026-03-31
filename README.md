@@ -12,15 +12,14 @@ Automatically remediate AWS S3 public access misconfigurations detected by Micro
 
 1. [How It Works](#how-it-works)
 2. [Prerequisites](#prerequisites)
-3. [Security Architecture](#security-architecture)
-4. [Quick Start](#quick-start)
-5. [Step-by-Step Deployment](#step-by-step-deployment)
-6. [Configuration](#configuration)
-7. [Testing](#testing)
-8. [Security Controls](#security-controls)
-9. [Troubleshooting](#troubleshooting)
-10. [Extending to Other Recommendations](#extending-to-other-aws-recommendations)
-11. [File Reference](#file-reference)
+3. [Quick Start](#quick-start)
+4. [Step-by-Step Deployment](#step-by-step-deployment)
+5. [Configuration](#configuration)
+6. [Testing](#testing)
+7. [Security Controls](#security-controls)
+8. [Troubleshooting](#troubleshooting)
+9. [Extending to Other Recommendations](#extending-to-other-aws-recommendations)
+10. [File Reference](#file-reference)
 
 ---
 
@@ -43,7 +42,7 @@ When MDC detects an S3 bucket or account with Block Public Access disabled, the 
 │                                                                              │
 │  2. remediate-s3-block-public-access-bucket                                 │
 │     └─ Triggers when: "...at the bucket level"                              │
-│     └─ FILTER: resourceId contains your target bucket name                  │
+│     └─ FILTER: resourceId contains "mywsbucketmdc"                          │
 └──────────────────────────────┬──────────────────────────────────────────────┘
                                ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -93,48 +92,10 @@ Before you begin, ensure you have:
 |-------------|---------|
 | **Azure Subscription** | With Microsoft Defender for Cloud enabled |
 | **Azure CLI** | Installed and logged in (`az login`) |
-| **Azure Functions Core Tools** | For deploying the Python function (`npm install -g azure-functions-core-tools@4`) |
-| **AWS IAM User** | With programmatic access for Secrets Manager retrieval |
-| **AWS IAM Permissions** | `s3:PutAccountPublicAccessBlock`, `s3:GetAccountPublicAccessBlock`, `s3:PutPublicAccessBlock`, `s3:GetPublicAccessBlock`, `secretsmanager:GetSecretValue` |
+| **Azure Functions Core Tools** | For deploying the Python function (`npm install -g azure-functions-core-tools@4`) || **Azure Key Vault** | For secure storage of API keys and AWS credentials || **AWS IAM User** | With programmatic access (Access Key + Secret Key) |
+| **AWS IAM Permissions** | `s3:PutAccountPublicAccessBlock`, `s3:GetAccountPublicAccessBlock`, `s3:PutPublicAccessBlock`, `s3:GetPublicAccessBlock` |
 | **Office 365 Account** | For sending email notifications |
 | **AWS Connector in MDC** | Your AWS account connected to Defender for Cloud |
-
----
-
-## Security Architecture
-
-This solution follows security best practices by using **Azure Key Vault** and **AWS Secrets Manager** for secrets management:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          SECRETS MANAGEMENT                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────────────┐          ┌─────────────────────┐                  │
-│  │   Azure Key Vault   │          │ AWS Secrets Manager │                  │
-│  │                     │          │                     │                  │
-│  │  • MDC_API_KEY      │          │  • aws_access_key_id│                  │
-│  │                     │          │  • aws_secret_access│                  │
-│  └─────────┬───────────┘          └──────────┬──────────┘                  │
-│            │                                  │                             │
-│            │ Key Vault Reference             │ SDK GetSecretValue           │
-│            │ @Microsoft.KeyVault(...)        │                              │
-│            ▼                                  ▼                             │
-│  ┌─────────────────────────────────────────────────────────────┐           │
-│  │                    AZURE FUNCTION                            │           │
-│  │                                                              │           │
-│  │  • Managed Identity → Key Vault access                      │           │
-│  │  • Runtime credential retrieval from AWS Secrets Manager    │           │
-│  │  • 55-minute credential caching (minimizes API calls)       │           │
-│  └──────────────────────────────────────────────────────────────┘           │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Benefits:**
-- ✅ No secrets in App Settings or code
-- ✅ Centralized secret rotation
-- ✅ Full audit trails in both Azure and AWS
-- ✅ Least privilege access with managed identities
 
 ---
 
@@ -143,128 +104,142 @@ This solution follows security best practices by using **Azure Key Vault** and *
 If you're familiar with Azure deployments, here's the fast path:
 
 ```powershell
-# 0. Create AWS Secret in Secrets Manager first (see Step-by-Step section)
-
-# 1. Deploy Azure Function with Key Vault
-$rg = "mdc-aws-remediation-rg"
-$location = "eastus"
-$funcApp = "mdc-s3-remediation-$(Get-Random -Maximum 9999)"
-$storage = "mdcremediation$(Get-Random -Maximum 99999)"
-$keyVault = "mdc-kv-$(Get-Random -Maximum 9999)"
-$mdcApiKey = (openssl rand -hex 32)
-
-az group create --name $rg --location $location
-
-az deployment group create --resource-group $rg `
-  --template-file "./arm-templates/function-app.json" `
-  --parameters functionAppName=$funcApp `
-               storageAccountName=$storage `
-               keyVaultName=$keyVault `
-               awsSecretsManagerSecretArn="arn:aws:secretsmanager:us-east-1:<account-id>:secret:<secret-name>" `
-               allowedAccountIds="<your-aws-account-id>" `
-               mdcApiKey=$mdcApiKey
-
-# 2. Deploy Azure Function code
+# 1. Deploy Azure Function
 cd azure-function
-func azure functionapp publish $funcApp --python
+func azure functionapp publish mdc-s3-remediation --python
 
-# 3. Deploy Logic App + Workflow Automations
-cd ..
-./deploy.ps1 -AzureFunctionApiKey $mdcApiKey -FallbackEmail "security@yourcompany.com" `
-  -AzureFunctionUrl "https://$funcApp.azurewebsites.net/api/remediate-s3-public-access"
+# 2. Create Key Vault and store secrets
+$kvName = "mdc-s3-kv-$(Get-Random -Maximum 9999)"
+az keyvault create --name $kvName --resource-group mdc-aws-remediation-rg --location swedencentral --enable-rbac-authorization true
 
-# 4. Authorize Office 365 connection in Azure Portal
-#    Portal → Resource Group → API Connections → <logic-app-name>-o365 → Authorize
+# Assign Key Vault Secrets Officer to yourself
+$userId = az ad signed-in-user show --query "id" -o tsv
+$kvId = az keyvault show --name $kvName --query "id" -o tsv
+az role assignment create --role "Key Vault Secrets Officer" --assignee-object-id $userId --scope $kvId
+
+# Store secrets
+az keyvault secret set --vault-name $kvName --name "mdc-api-key" --value "<generate-a-secure-key>"
+az keyvault secret set --vault-name $kvName --name "aws-access-key-id" --value "<your-aws-access-key>"
+az keyvault secret set --vault-name $kvName --name "aws-secret-access-key" --value "<your-aws-secret-key>"
+
+# 3. Enable managed identity and grant Key Vault access
+az functionapp identity assign --name mdc-s3-remediation --resource-group mdc-aws-remediation-rg
+$principalId = az functionapp show --name mdc-s3-remediation --resource-group mdc-aws-remediation-rg --query "identity.principalId" -o tsv
+az role assignment create --role "Key Vault Secrets User" --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --scope $kvId
+
+# 4. Configure Function App with Key Vault references
+az functionapp config appsettings set --name mdc-s3-remediation --resource-group mdc-aws-remediation-rg --settings `
+  "MDC_API_KEY=@Microsoft.KeyVault(SecretUri=https://$kvName.vault.azure.net/secrets/mdc-api-key)" `
+  "AWS_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=https://$kvName.vault.azure.net/secrets/aws-access-key-id)" `
+  "AWS_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=https://$kvName.vault.azure.net/secrets/aws-secret-access-key)" `
+  AWS_REGION=eu-north-1 `
+  ALLOWED_ACCOUNT_IDS=<your-aws-account-id> `
+  ALLOWED_BUCKET_NAMES=<your-bucket-name>
+
+# 5. Deploy Logic App + Workflow Automations
+./deploy.ps1 -AzureFunctionApiKey "<your-mdc-api-key>" -FallbackEmail "security@yourcompany.com"
+
+# 6. Authorize Office 365 connection in Azure Portal
+#    Portal → Resource Group → API Connections → mdc-remediate-s3-block-public-access-o365 → Authorize
 ```
 
 ---
 
 ## Step-by-Step Deployment
 
-### Step 1: Create AWS Secret in Secrets Manager
+### Step 1: Create the Azure Function App (if not exists)
 
-First, store your AWS credentials in AWS Secrets Manager:
-
-```bash
-# Create secret with AWS credentials
-aws secretsmanager create-secret \
-  --name mdc-s3-remediation-credentials \
-  --description "Credentials for MDC S3 remediation Azure Function" \
-  --secret-string '{"aws_access_key_id":"AKIA...","aws_secret_access_key":"..."}'
-```
-
-**Required IAM permissions for the secret retrieval:**
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": "secretsmanager:GetSecretValue",
-      "Resource": "arn:aws:secretsmanager:*:*:secret:mdc-s3-remediation-credentials*"
-    }
-  ]
-}
-```
-
-### Step 2: Deploy Azure Function App with Key Vault
-
-Use the ARM template to deploy the Function App with integrated Key Vault:
+If you don't have a Function App yet, create one:
 
 ```powershell
-$rg = "<your-resource-group>"
-$location = "<your-location>"
-$funcApp = "<your-function-app-name>"
-$storage = "<your-storage-account>"
-$keyVault = "<your-keyvault-name>"
-$mdcApiKey = (openssl rand -hex 32)  # Store this - you'll need it later
+$rg = "mdc-aws-remediation-rg"
+$location = "swedencentral"
+$funcApp = "mdc-s3-remediation"
+$storage = "mdcs3remediationstore"
 
 # Create resource group
 az group create --name $rg --location $location
 
-# Deploy Function App with Key Vault
-az deployment group create --resource-group $rg `
-  --template-file "./arm-templates/function-app.json" `
-  --parameters functionAppName=$funcApp `
-               storageAccountName=$storage `
-               keyVaultName=$keyVault `
-               awsSecretsManagerSecretArn="arn:aws:secretsmanager:us-east-1:<account-id>:secret:mdc-s3-remediation-credentials" `
-               awsRegion="us-east-1" `
-               allowedAccountIds="<your-aws-account-id>" `
-               allowedBucketNames="<your-bucket-name>" `
-               mdcApiKey=$mdcApiKey
+# Create storage account
+az storage account create --name $storage --resource-group $rg --location $location --sku Standard_LRS
+
+# Create Function App
+az functionapp create --name $funcApp --resource-group $rg --storage-account $storage `
+  --consumption-plan-location $location --runtime python --runtime-version 3.11 --functions-version 4
 ```
 
-This creates:
-- **Azure Key Vault** - Stores MDC_API_KEY securely
-- **Managed Identity** - Granted Key Vault Secrets User role
-- **Function App** - Configured with Key Vault references
-
-### Step 3: Deploy the Azure Function Code
+### Step 2: Deploy the Azure Function Code
 
 ```powershell
 cd azure-function
-func azure functionapp publish <your-function-app-name> --python
+func azure functionapp publish mdc-s3-remediation --python
 ```
 
-### Step 4: Verify Configuration
+### Step 3: Create Azure Key Vault and Store Secrets
 
-| Setting | Source | Description |
-|---------|--------|-------------|
-| `MDC_API_KEY` | Azure Key Vault | API key for function auth (via Key Vault reference) |
-| `AWS_SECRETS_MANAGER_SECRET_ARN` | App Setting | ARN of the AWS secret containing credentials |
-| `AWS_REGION` | App Setting | AWS region for API calls |
-| `ALLOWED_ACCOUNT_IDS` | App Setting | Comma-separated allowed AWS account IDs |
-| `ALLOWED_BUCKET_NAMES` | App Setting | Comma-separated allowed bucket names |
+Secrets are stored in Azure Key Vault for security:
 
-### Step 5: Deploy Logic App and Workflow Automations
+```powershell
+# Create Key Vault with RBAC authorization
+$kvName = "mdc-s3-kv-$(Get-Random -Maximum 9999)"
+az keyvault create --name $kvName --resource-group mdc-aws-remediation-rg --location swedencentral --enable-rbac-authorization true
+
+# Grant yourself access to manage secrets
+$userId = az ad signed-in-user show --query "id" -o tsv
+$kvId = az keyvault show --name $kvName --query "id" -o tsv
+az role assignment create --role "Key Vault Secrets Officer" --assignee-object-id $userId --scope $kvId
+
+# Wait for RBAC propagation
+Start-Sleep -Seconds 10
+
+# Store secrets
+az keyvault secret set --vault-name $kvName --name "mdc-api-key" --value "<generate-a-secure-key>"
+az keyvault secret set --vault-name $kvName --name "aws-access-key-id" --value "<your-aws-access-key>"
+az keyvault secret set --vault-name $kvName --name "aws-secret-access-key" --value "<your-aws-secret-key>"
+```
+
+### Step 4: Configure Function App with Managed Identity
+
+Enable managed identity and grant Key Vault access:
+
+```powershell
+# Enable system-assigned managed identity
+az functionapp identity assign --name mdc-s3-remediation --resource-group mdc-aws-remediation-rg
+
+# Grant Function App access to read secrets
+$principalId = az functionapp show --name mdc-s3-remediation --resource-group mdc-aws-remediation-rg --query "identity.principalId" -o tsv
+az role assignment create --role "Key Vault Secrets User" --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --scope $kvId
+```
+
+### Step 5: Configure Environment Variables
+
+Set the Function App settings with Key Vault references:
+
+```powershell
+az functionapp config appsettings set --name mdc-s3-remediation --resource-group mdc-aws-remediation-rg --settings `
+  "MDC_API_KEY=@Microsoft.KeyVault(SecretUri=https://$kvName.vault.azure.net/secrets/mdc-api-key)" `
+  "AWS_ACCESS_KEY_ID=@Microsoft.KeyVault(SecretUri=https://$kvName.vault.azure.net/secrets/aws-access-key-id)" `
+  "AWS_SECRET_ACCESS_KEY=@Microsoft.KeyVault(SecretUri=https://$kvName.vault.azure.net/secrets/aws-secret-access-key)" `
+  AWS_REGION=eu-north-1 `
+  ALLOWED_ACCOUNT_IDS=<your-aws-account-id> `
+  ALLOWED_BUCKET_NAMES=<your-bucket-name>
+```
+
+| Setting | Description | Storage |
+|---------|-------------|---------|
+| `MDC_API_KEY` | API key to protect the function endpoint | Key Vault reference |
+| `AWS_ACCESS_KEY_ID` | AWS IAM access key | Key Vault reference |
+| `AWS_SECRET_ACCESS_KEY` | AWS IAM secret key | Key Vault reference |
+| `AWS_REGION` | AWS region for S3 control operations | Plain text |
+| `ALLOWED_ACCOUNT_IDS` | Comma-separated AWS account IDs allowed | Plain text |
+| `ALLOWED_BUCKET_NAMES` | Comma-separated bucket names allowed | Plain text |
+
+### Step 6: Deploy Logic App and Workflow Automations
 
 Run the deployment script:
 
 ```powershell
-./deploy.ps1 -AzureFunctionApiKey "<your-mdc-api-key>" -FallbackEmail "security@yourcompany.com" `
-  -AzureFunctionUrl "https://<your-function-app-name>.azurewebsites.net/api/remediate-s3-public-access"
+./deploy.ps1 -AzureFunctionApiKey "<your-mdc-api-key>" -FallbackEmail "security@yourcompany.com"
 ```
 
 This creates:
@@ -272,13 +247,13 @@ This creates:
 - **Workflow Automation (account-level):** Triggers for account-level recommendations
 - **Workflow Automation (bucket-level):** Triggers for bucket-level recommendations (filtered to your target bucket)
 
-### Step 6: Authorize Office 365 Connection
+### Step 7: Authorize Office 365 Connection
 
 The Logic App needs permission to send emails:
 
 1. Go to **Azure Portal**
-2. Navigate to your **Resource Group**
-3. Click **API Connections** → `<logic-app-name>-o365`
+2. Navigate to your **Resource Group** (`mdc-aws-remediation-rg`)
+3. Click **API Connections** → `mdc-remediate-s3-block-public-access-o365`
 4. Click **Edit API connection**
 5. Click **Authorize** → Sign in with your Office 365 account
 6. Click **Save**
@@ -295,7 +270,7 @@ To remediate a different bucket, update **two places**:
 
 #### 1. Workflow Automation Filter
 
-Edit [arm-templates/workflow-automation.json](arm-templates/workflow-automation.json) and update the bucket name filter:
+Edit [arm-templates/workflow-automation.json](arm-templates/workflow-automation.json) line 119:
 
 ```json
 {
@@ -314,7 +289,7 @@ Then redeploy:
 
 Update the Function App setting:
 ```powershell
-az functionapp config appsettings set --name <your-function-app-name> --resource-group <your-resource-group> `
+az functionapp config appsettings set --name mdc-s3-remediation --resource-group mdc-aws-remediation-rg `
   --settings ALLOWED_BUCKET_NAMES=your-new-bucket-name
 ```
 
@@ -322,7 +297,7 @@ az functionapp config appsettings set --name <your-function-app-name> --resource
 
 Use comma-separated values:
 ```powershell
-az functionapp config appsettings set --name <your-function-app-name> --resource-group <your-resource-group> `
+az functionapp config appsettings set --name mdc-s3-remediation --resource-group mdc-aws-remediation-rg `
   --settings ALLOWED_BUCKET_NAMES=bucket1,bucket2,bucket3
 ```
 
@@ -334,18 +309,18 @@ az functionapp config appsettings set --name <your-function-app-name> --resource
 
 **Account-level remediation:**
 ```bash
-curl -X POST "https://<your-function-app-name>.azurewebsites.net/api/remediate-s3-public-access" \
+curl -X POST "https://mdc-s3-remediation.azurewebsites.net/api/remediate-s3-public-access" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <your-api-key>" \
-  -d '{"accountId":"123456789012"}'
+  -d '{"accountId":"624725955754"}'
 ```
 
 **Bucket-level remediation:**
 ```bash
-curl -X POST "https://<your-function-app-name>.azurewebsites.net/api/remediate-s3-public-access" \
+curl -X POST "https://mdc-s3-remediation.azurewebsites.net/api/remediate-s3-public-access" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <your-api-key>" \
-  -d '{"bucketName":"my-example-bucket"}'
+  -d '{"bucketName":"mywsbucketmdc"}'
 ```
 
 ### Test the Logic App Manually
@@ -364,9 +339,9 @@ curl -X POST "https://<your-function-app-name>.azurewebsites.net/api/remediate-s
       },
       "resourceDetails": {
         "Source": "Aws",
-        "Id": "arn:aws:s3:::my-example-bucket",
-        "ConnectorId": "123456789012",
-        "Region": "us-east-1"
+        "Id": "arn:aws:s3:::mywsbucketmdc",
+        "ConnectorId": "624725955754",
+        "Region": "eu-north-1"
       }
     }
   }
@@ -390,39 +365,17 @@ Multiple layers of security protect this automation:
 
 | Layer | Control | How It Works |
 |-------|---------|--------------|
-| **Azure Key Vault** | MDC API Key storage | API key stored in Key Vault, accessed via Key Vault Reference |
-| **Azure Key Vault** | RBAC authorization | Only managed identity has "Key Vault Secrets User" role |
-| **AWS Secrets Manager** | AWS credentials storage | Access keys stored in Secrets Manager, never in app settings |
-| **Azure Function** | Managed identity | Uses user-assigned managed identity for Key Vault access |
-| **Azure Function** | Credential caching | AWS credentials cached 55 min to minimize API calls |
+| **Azure Key Vault** | Secrets management | All sensitive credentials (API keys, AWS keys) stored securely in Key Vault |
+| **Azure Key Vault** | Key Vault references | Function App retrieves secrets at runtime via `@Microsoft.KeyVault()` syntax |
+| **Azure Function** | System-assigned managed identity | Authenticates to Key Vault without stored credentials |
+| **Logic App** | System-assigned managed identity | Authenticates to Azure APIs without stored credentials |
+| **Logic App** | Governance rules lookup | Queries MDC Governance API to find resource owner |
+| **Logic App** | Owner resolution priority | Uses cascade: Governance Rules → MDC assigned → Fallback email |
 | **Workflow Automation** | Bucket filter | Only triggers for specific bucket names (prevents remediation of unintended buckets) |
-| **Logic App** | Managed identity | Uses system-assigned managed identity to query MDC governance rules (Security Reader role) |
-| **Logic App** | Owner lookup | Queries governance rules for assigned owner instead of hardcoded email |
 | **Azure Function** | API key validation | Requests without valid `x-api-key` header are rejected with 401 |
 | **Azure Function** | Account allowlist | Only processes remediation for pre-approved AWS account IDs |
 | **Azure Function** | Bucket allowlist | Only processes remediation for pre-approved bucket names |
-| **AWS IAM** | Least privilege | IAM user has only the minimum S3 + Secrets Manager permissions |
-
-### Rotating Secrets
-
-**Azure Key Vault (MDC API Key):**
-```powershell
-# Generate new key and update Key Vault
-$newKey = (openssl rand -hex 32)
-az keyvault secret set --vault-name <your-keyvault> --name mdc-api-key --value $newKey
-
-# Update Logic App parameter (or redeploy)
-```
-
-**AWS Secrets Manager:**
-```bash
-# Update the secret
-aws secretsmanager update-secret \
-  --secret-id mdc-s3-remediation-credentials \
-  --secret-string '{"aws_access_key_id":"AKIA_NEW...","aws_secret_access_key":"NEW_SECRET..."}'
-
-# Function will pick up new credentials within 55 minutes (cache TTL)
-```
+| **AWS IAM** | Least privilege | IAM user has only the minimum S3 permissions required |
 
 ---
 
@@ -452,7 +405,7 @@ aws secretsmanager update-secret \
 
 **Cause:** Office 365 connection not authorized.
 
-**Solution:** Re-authorize the API connection (see [Step 6](#step-6-authorize-office-365-connection)).
+**Solution:** Re-authorize the API connection (see [Step 5](#step-5-authorize-office-365-connection)).
 
 ### Automation Not Triggering
 
@@ -552,7 +505,7 @@ aws iam put-user-policy --user-name mdc-remediation-user \
 ```powershell
 # Deploy updated function
 cd azure-function
-func azure functionapp publish <your-function-app-name> --python
+func azure functionapp publish mdc-s3-remediation --python
 
 # Deploy updated workflow automation
 ./deploy.ps1 -AzureFunctionApiKey "<your-api-key>" -FallbackEmail "security@yourcompany.com"
@@ -576,20 +529,54 @@ func azure functionapp publish <your-function-app-name> --python
 | File | Purpose |
 |------|---------|
 | `deploy.ps1` | PowerShell script that deploys both the Logic App and Workflow Automations to Azure using ARM templates. Run this after deploying the Azure Function. |
-| `arm-templates/function-app.json` | ARM template defining the Azure Function App infrastructure. Uses managed identity instead of storage account keys (required by some tenant policies). Creates the Function App, App Service Plan, Storage Account, and Application Insights. |
+| `arm-templates/function-app.json` | ARM template defining the Azure Function App infrastructure. Uses managed identity instead of storage account keys. Creates the Function App, App Service Plan, Storage Account, and Application Insights. |
 | `arm-templates/logic-app.json` | ARM template defining the Logic App workflow. Orchestrates the remediation flow: receives MDC webhook → parses alert data → extracts AWS account/bucket info → calls Azure Function → sends email notification via Office 365. |
-| `arm-templates/workflow-automation.json` | ARM template defining MDC Workflow Automations. Creates two automations that monitor MDC assessments and trigger the Logic App when S3 Block Public Access recommendations become unhealthy. Filters bucket-level automation to only trigger for your target bucket. |
-| `azure-function/function_app.py` | Python code containing the remediation logic. Validates API key and allowlists, then calls AWS boto3 APIs (`s3control.put_public_access_block` for account-level or `s3.put_public_access_block` for bucket-level) to enable all 4 Block Public Access settings. |
-| `azure-function/host.json` | Azure Functions runtime configuration. Required by the Functions runtime to configure logging, extensions, and HTTP settings. Without this file, the Function App won't start. |
-| `azure-function/local.settings.json` | Environment variables for local development (AWS keys, API key). Not deployed to Azure—use `az functionapp config appsettings` to set these in production. **Note: Add to .gitignore to avoid committing secrets.** |
+| `arm-templates/workflow-automation.json` | ARM template defining MDC Workflow Automations. Creates two automations that monitor MDC assessments and trigger the Logic App when S3 Block Public Access recommendations become unhealthy. |
+| `azure-function/function_app.py` | Python code containing the remediation logic. Validates API key and allowlists, then calls AWS boto3 APIs to enable all 4 Block Public Access settings. Supports credential retrieval from environment variables (via Key Vault references). |
+| `azure-function/host.json` | Azure Functions runtime configuration. Required by the Functions runtime to configure logging, extensions, and HTTP settings. |
+| `azure-function/local.settings.json` | Environment variables for local development only. In production, secrets are stored in **Azure Key Vault** and referenced using `@Microsoft.KeyVault()` syntax. |
 | `azure-function/requirements.txt` | Python package dependencies. Lists `azure-functions` (Functions SDK) and `boto3` (AWS SDK). Azure installs these automatically during deployment. |
 
 ---
 
-## License
+## Architecture
 
-MIT License - See [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           AZURE RESOURCES                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────┐    ┌─────────────────────┐                         │
+│  │   Azure Key Vault   │    │   Workflow          │                         │
+│  │                     │    │   Automations       │                         │
+│  │  • mdc-api-key      │    │                     │                         │
+│  │  • aws-access-key-id│    │  Trigger on MDC     │                         │
+│  │  • aws-secret-...   │    │  recommendations    │                         │
+│  └──────────┬──────────┘    └──────────┬──────────┘                         │
+│             │                          │                                     │
+│             │ @Microsoft.KeyVault()    │                                     │
+│             ▼                          ▼                                     │
+│  ┌─────────────────────┐    ┌─────────────────────┐                         │
+│  │   Azure Function    │◄───│     Logic App       │                         │
+│  │                     │    │                     │                         │
+│  │  System Managed     │    │  System Managed     │                         │
+│  │  Identity           │    │  Identity           │                         │
+│  └──────────┬──────────┘    └─────────────────────┘                         │
+│             │                                                                │
+└─────────────┼────────────────────────────────────────────────────────────────┘
+              │
+              │ AWS API Calls (boto3)
+              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              AWS RESOURCES                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────┐    ┌─────────────────────┐                         │
+│  │    IAM User         │    │   S3 Buckets        │                         │
+│  │                     │    │                     │                         │
+│  │  Least privilege:   │───▶│  Block Public       │                         │
+│  │  s3:Put/Get...      │    │  Access enabled     │                         │
+│  └─────────────────────┘    └─────────────────────┘                         │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
