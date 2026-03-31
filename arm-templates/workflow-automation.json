@@ -1,0 +1,176 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "automationName": {
+      "type": "string",
+      "defaultValue": "remediate-s3-block-public-access",
+      "metadata": {
+        "description": "Name of the workflow automation"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for the automation"
+      }
+    },
+    "logicAppResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Logic App to trigger"
+      }
+    },
+    "logicAppTriggerUri": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Trigger URI of the Logic App (HTTP trigger URL)"
+      }
+    },
+    "targetBucketName": {
+      "type": "string",
+      "defaultValue": "my-example-bucket",
+      "metadata": {
+        "description": "S3 bucket name to target for bucket-level remediation"
+      }
+    }
+  },
+  "variables": {
+    "recommendationDisplayName": "S3 Block Public Access setting should be enabled"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Security/automations",
+      "apiVersion": "2019-01-01-preview",
+      "name": "[concat(parameters('automationName'), '-account')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "purpose": "MDC-AWS-Remediation",
+        "recommendation": "S3-Block-Public-Access-Account"
+      },
+      "properties": {
+        "description": "Automatically remediate S3 Block Public Access at account level",
+        "isEnabled": true,
+        "scopes": [
+          {
+            "description": "Full subscription scope",
+            "scopePath": "[subscription().id]"
+          }
+        ],
+        "sources": [
+          {
+            "eventSource": "Assessments",
+            "ruleSets": [
+              {
+                "rules": [
+                  {
+                    "propertyJPath": "properties.displayName",
+                    "propertyType": "String",
+                    "expectedValue": "S3 Block Public Access setting should be enabled",
+                    "operator": "Equals"
+                  },
+                  {
+                    "propertyJPath": "properties.status.code",
+                    "propertyType": "String",
+                    "expectedValue": "Unhealthy",
+                    "operator": "Equals"
+                  },
+                  {
+                    "propertyJPath": "properties.resourceDetails.Source",
+                    "propertyType": "String",
+                    "expectedValue": "Aws",
+                    "operator": "Equals"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "actionType": "LogicApp",
+            "logicAppResourceId": "[parameters('logicAppResourceId')]",
+            "uri": "[parameters('logicAppTriggerUri')]"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Security/automations",
+      "apiVersion": "2019-01-01-preview",
+      "name": "[concat(parameters('automationName'), '-bucket')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "purpose": "MDC-AWS-Remediation",
+        "recommendation": "S3-Block-Public-Access-Bucket"
+      },
+      "properties": {
+        "description": "[concat('Automatically remediate S3 Block Public Access at bucket level for ', parameters('targetBucketName'))]",
+        "isEnabled": true,
+        "scopes": [
+          {
+            "description": "Full subscription scope",
+            "scopePath": "[subscription().id]"
+          }
+        ],
+        "sources": [
+          {
+            "eventSource": "Assessments",
+            "ruleSets": [
+              {
+                "rules": [
+                  {
+                    "propertyJPath": "properties.displayName",
+                    "propertyType": "String",
+                    "expectedValue": "S3 Block Public Access setting should be enabled at the bucket level",
+                    "operator": "Equals"
+                  },
+                  {
+                    "propertyJPath": "properties.status.code",
+                    "propertyType": "String",
+                    "expectedValue": "Unhealthy",
+                    "operator": "Equals"
+                  },
+                  {
+                    "propertyJPath": "properties.resourceDetails.Source",
+                    "propertyType": "String",
+                    "expectedValue": "Aws",
+                    "operator": "Equals"
+                  },
+                  {
+                    "propertyJPath": "properties.resourceDetails.Id",
+                    "propertyType": "String",
+                    "expectedValue": "[parameters('targetBucketName')]",
+                    "operator": "Contains"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "actionType": "LogicApp",
+            "logicAppResourceId": "[parameters('logicAppResourceId')]",
+            "uri": "[parameters('logicAppTriggerUri')]"
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "automationAccountId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Security/automations', concat(parameters('automationName'), '-account'))]"
+    },
+    "automationBucketId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Security/automations', concat(parameters('automationName'), '-bucket'))]"
+    },
+    "automationName": {
+      "type": "string",
+      "value": "[parameters('automationName')]"
+    }
+  }
+}
