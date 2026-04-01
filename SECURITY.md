@@ -19,12 +19,6 @@ When deploying this solution:
 - **Enable audit logging** - Monitor Azure Function and Logic App execution logs
 - **Restrict allowed accounts/buckets** - Configure `ALLOWED_ACCOUNT_IDS` and `ALLOWED_BUCKET_NAMES` to limit scope
 
-## Supported Versions
+## Scope
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.x     | :white_check_mark: |
-
-## Acknowledgments
-
-We appreciate responsible disclosure of security issues.
+This is a single-purpose remediation script. Security reports are welcome via private disclosure.
